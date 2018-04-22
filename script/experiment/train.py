@@ -15,25 +15,24 @@ from tensorboardX import SummaryWriter
 import numpy as np
 import argparse
 
-from tri_loss.dataset import create_dataset
-from tri_loss.model.Model import Model
-from tri_loss.model.TripletLoss import TripletLoss
-from tri_loss.model.loss import global_loss
+from reptile.dataset import create_dataset
+from reptile.model.Model import Model
+import reptile.model.meta as meta
 
-from tri_loss.utils.utils import time_str
-from tri_loss.utils.utils import str2bool
-from tri_loss.utils.utils import tight_float_str as tfs
-from tri_loss.utils.utils import may_set_mode
-from tri_loss.utils.utils import load_state_dict
-from tri_loss.utils.utils import load_ckpt
-from tri_loss.utils.utils import save_ckpt
-from tri_loss.utils.utils import set_devices
-from tri_loss.utils.utils import AverageMeter
-from tri_loss.utils.utils import to_scalar
-from tri_loss.utils.utils import ReDirectSTD
-from tri_loss.utils.utils import set_seed
-from tri_loss.utils.utils import adjust_lr_exp
-from tri_loss.utils.utils import adjust_lr_staircase
+from reptile.utils.utils import time_str
+from reptile.utils.utils import str2bool
+from reptile.utils.utils import tight_float_str as tfs
+from reptile.utils.utils import may_set_mode
+from reptile.utils.utils import load_state_dict
+from reptile.utils.utils import load_ckpt
+from reptile.utils.utils import save_ckpt
+from reptile.utils.utils import set_devices
+from reptile.utils.utils import AverageMeter
+from reptile.utils.utils import to_scalar
+from reptile.utils.utils import ReDirectSTD
+from reptile.utils.utils import set_seed
+from reptile.utils.utils import adjust_lr_exp
+from reptile.utils.utils import adjust_lr_staircase
 
 
 class Config(object):
@@ -53,32 +52,33 @@ class Config(object):
     parser.add_argument('--crop_prob', type=float, default=0)
     parser.add_argument('--crop_ratio', type=float, default=1)
     parser.add_argument('--mirror', type=str2bool, default=True)
-    parser.add_argument('--ids_per_batch', type=int, default=32)
-    parser.add_argument('--ims_per_id', type=int, default=4)
 
     parser.add_argument('--log_to_file', type=str2bool, default=True)
     parser.add_argument('--steps_per_log', type=int, default=20)
-    parser.add_argument('--epochs_per_val', type=int, default=1e10)
+    parser.add_argument('--steps_per_val', type=int, default=1e3)
 
-    parser.add_argument('--last_conv_stride', type=int, default=1,
-                        choices=[1, 2])
+    parser.add_argument('--num_classes', type=int, default=5)
+    parser.add_argument('--num_shots', type=int, default=5)
+    parser.add_argument('--traion_shots', type=int, default=15)
+
+    parser.add_argument('--meta_train_iters', type=int, default=60000)
+    parser.add_argument('--meta_train_step_size', type=int, default=1)
+    parser.add_argument('--meta_train_inner_batch_size', type=int, default=8)
+    parser.add_argument('--meta_train_inner_iters', type=int, default=10)
+    parser.add_argument('--meta_train_batch_size', type=int, default=5)
+
+    parser.add_argument('--learning-rate', type=float, default=0.00022)
+
+    parser.add_argument('--meta_eval_inner_batch_size', type=int, default=8)
+    parser.add_argument('--meta_eval_inner_iters', type=int, default=10)
+    parser.add_argument('--meta_eval_batch_size', type=int, default=5)
+
     parser.add_argument('--normalize_feature', type=str2bool, default=False)
-    parser.add_argument('--margin', type=float, default=0.3)
 
     parser.add_argument('--only_test', type=str2bool, default=False)
     parser.add_argument('--resume', type=str2bool, default=False)
     parser.add_argument('--exp_dir', type=str, default='')
     parser.add_argument('--model_weight_file', type=str, default='')
-
-    parser.add_argument('--base_lr', type=float, default=2e-4)
-    parser.add_argument('--lr_decay_type', type=str, default='exp',
-                        choices=['exp', 'staircase'])
-    parser.add_argument('--exp_decay_at_epoch', type=int, default=76)
-    parser.add_argument('--staircase_decay_at_epochs',
-                        type=eval, default=(101, 201,))
-    parser.add_argument('--staircase_decay_multiply_factor',
-                        type=float, default=0.1)
-    parser.add_argument('--total_epochs', type=int, default=150)
 
     args = parser.parse_args()
 
@@ -119,14 +119,22 @@ class Config(object):
 
     # Whether to scale by 1/255
     self.scale_im = True
-    self.im_mean = [0.486, 0.459, 0.408]
-    self.im_std = [0.229, 0.224, 0.225]
+
+    #self.im_mean = [0.486, 0.459, 0.408]
+    #self.im_std = [0.229, 0.224, 0.225]
+
+    self.im_mean = None
+    self.im_std = None
 
     self.train_mirror_type = 'random' if args.mirror else None
 
-    self.ids_per_batch = args.ids_per_batch
-    self.ims_per_id = args.ims_per_id
-    self.train_final_batch = True
+    #self.ids_per_batch = args.ids_per_batch
+    #self.ims_per_id = args.ims_per_id
+    self.num_classes = args.num_classes
+    self.train_shots = args.num_shots
+
+    self.train_batch_size=args.meta_train_batch_size
+
     self.train_shuffle = True
 
     self.test_batch_size = 32
@@ -148,21 +156,25 @@ class Config(object):
       prng = np.random.RandomState(self.seed)
     self.train_set_kwargs = dict(
       part=self.trainset_part,
-      ids_per_batch=self.ids_per_batch,
-      ims_per_id=self.ims_per_id,
-      final_batch=self.train_final_batch,
+      num_classes=self.num_classes,
+      num_shots=self.train_shots,
+      batch_size=self.train_batch_size,
       shuffle=self.train_shuffle,
       crop_prob=self.crop_prob,
       crop_ratio=self.crop_ratio,
       mirror_type=self.train_mirror_type,
       prng=prng)
     self.train_set_kwargs.update(dataset_kwargs)
+    del self.train_set_kwargs['num_prefetch_threads']
 
     prng = np.random
     if self.seed is not None:
       prng = np.random.RandomState(self.seed)
     self.val_set_kwargs = dict(
       part='val',
+      num_classes=self.num_classes,
+      num_shots=self.train_shots,
+      eval_batch_size=self.meta_eval_batch_size,
       batch_size=self.test_batch_size,
       final_batch=self.test_final_batch,
       shuffle=self.test_shuffle,
@@ -175,6 +187,9 @@ class Config(object):
       prng = np.random.RandomState(self.seed)
     self.test_set_kwargs = dict(
       part='test',
+      num_classes=self.num_classes,
+      num_shots=self.train_shots,
+      eval_batch_size=self.meta_eval_batch_size,
       batch_size=self.test_batch_size,
       final_batch=self.test_final_batch,
       shuffle=self.test_shuffle,
@@ -186,34 +201,27 @@ class Config(object):
     # ReID Model  #
     ###############
 
-    # The last block of ResNet has stride 2. We can set the stride to 1 so that
-    # the spatial resolution before global pooling is doubled.
-    self.last_conv_stride = args.last_conv_stride
-
     # Whether to normalize feature to unit length along the Channel dimension,
     # before computing distance
     self.normalize_feature = args.normalize_feature
-
-    # Margin of triplet loss
-    self.margin = args.margin
 
     #############
     # Training  #
     #############
 
-    self.weight_decay = 0.0005
+    self.meta_train_iters = args.meta_train_iters
+    self.meta_train_step_size = args.meta_train_step_size
+    self.meta_train_inner_batch_size = args.meta_train_inner_batch_size
+    self.meta_train_inner_iters = args.meta_train_inner_iters
+    self.meta_train_batch_size = args.meta_train_batch_size
+    self.learning_rate = args.learning_rate
 
-    # Initial learning rate
-    self.base_lr = args.base_lr
-    self.lr_decay_type = args.lr_decay_type
-    self.exp_decay_at_epoch = args.exp_decay_at_epoch
-    self.staircase_decay_at_epochs = args.staircase_decay_at_epochs
-    self.staircase_decay_multiply_factor = args.staircase_decay_multiply_factor
-    # Number of epochs to train
-    self.total_epochs = args.total_epochs
+    self.meta_eval_inner_batch_size = args.meta_eval_inner_batch_size
+    self.meta_eval_inner_iters = args.meta_eval_inner_iters
+    self.meta_eval_batch_size = args.meta_eval_batch_size
 
     # How often (in epochs) to test on val set.
-    self.epochs_per_val = args.epochs_per_val
+    self.stpes_per_val = args.steps_per_val
 
     # How often (in batches) to log. If only need to log the average
     # information for each epoch, set this to a large value, e.g. 1e10.
@@ -240,17 +248,9 @@ class Config(object):
         'exp/train',
         '{}'.format(self.dataset),
         #
-        'lcs_{}_'.format(self.last_conv_stride) +
-        ('nf_' if self.normalize_feature else 'not_nf_') +
-        'margin_{}_'.format(tfs(self.margin)) +
-        'lr_{}_'.format(tfs(self.base_lr)) +
-        '{}_'.format(self.lr_decay_type) +
-        ('decay_at_{}_'.format(self.exp_decay_at_epoch)
-         if self.lr_decay_type == 'exp'
-         else 'decay_at_{}_factor_{}_'.format(
-          '_'.join([str(e) for e in args.staircase_decay_at_epochs]),
-          tfs(self.staircase_decay_multiply_factor))) +
-        'total_{}'.format(self.total_epochs),
+        'lr_{}_'.format(tfs(self.learning_rate)) +
+        'mstep_{}_'.format(tfs(self.meta_train_step)) +
+        'total_{}'.format(self.meta_train_iters),
         #
         'run{}'.format(self.run),
       )
@@ -283,12 +283,12 @@ class ExtractFeature(object):
     # Set eval mode.
     # Force all BN layers to use global mean and variance, also disable
     # dropout.
-    self.model.eval()
+    #self.model.eval()
     ims = Variable(self.TVT(torch.from_numpy(ims).float()))
-    feat = self.model(ims)
+    feat = self.model.embedding(ims)
     feat = feat.data.cpu().numpy()
     # Restore the model to its old train/eval mode.
-    self.model.train(old_train_eval_model)
+    #self.model.train(old_train_eval_model)
     return feat
 
 
@@ -338,19 +338,26 @@ def main():
   # Models  #
   ###########
 
-  model = Model(last_conv_stride=cfg.last_conv_stride)
+  model = Model(cfg.num_classes)
   # Model wrapper
-  model_w = DataParallel(model)
+  if torch.cuda.is_available():
+    model.cuda()
+  #model_w = DataParallel(model)
 
   #############################
   # Criteria and Optimizers   #
   #############################
 
-  tri_loss = TripletLoss(margin=cfg.margin)
+  #tri_loss = TripletLoss(margin=cfg.margin)
 
-  optimizer = optim.Adam(model.parameters(),
-                         lr=cfg.base_lr,
-                         weight_decay=cfg.weight_decay)
+  #optimizer = optim.Adam(model.parameters(),
+  #                       lr=cfg.base_lr,
+  #                       weight_decay=cfg.weight_decay)
+
+  criterion = torch.nn.CrossEntropyLoss()
+  optimizer = torch.optim.Adam(model.parameters(),
+      lr=cfg.learning_rate,
+      betas=(0, 0.999))
 
   # Bind them together just to save some codes in the following usage.
   modules_optims = [model, optimizer]
@@ -381,21 +388,25 @@ def main():
         load_ckpt(modules_optims, cfg.ckpt_file)
 
     for test_set, name in zip(test_sets, test_set_names):
-      test_set.set_feat_func(ExtractFeature(model_w, TVT))
+      weights_original = meta.eval_tarin(test_set, model, criterion, optimizer, cfg.meta_eval_inner_iters, cfg.eval_iters)
+      test_set.set_feat_func(ExtractFeature(model, TVT))
       print('\n=========> Test on dataset: {} <=========\n'.format(name))
       test_set.eval(
         normalize_feat=cfg.normalize_feature,
         verbose=True)
+      meta.reset_weights(model, weights_original)
 
   def validate():
+    weights_original = meta.eval_tarin(val_set, model, criterion, optimizer, cfg.meta_eval_inner_iters, cfg.eval_iters)
     if val_set.extract_feat_func is None:
-      val_set.set_feat_func(ExtractFeature(model_w, TVT))
+      val_set.set_feat_func(ExtractFeature(model, TVT))
     print('\n=========> Test on validation set <=========\n')
     mAP, cmc_scores, _, _ = val_set.eval(
       normalize_feat=cfg.normalize_feature,
       to_re_rank=False,
       verbose=False)
     print()
+    meta.reset_weights(model, weights_original)
     return mAP, cmc_scores[0]
 
   if cfg.only_test:
@@ -406,112 +417,36 @@ def main():
   # Training #
   ############
 
-  start_ep = resume_ep if cfg.resume else 0
-  for ep in range(start_ep, cfg.total_epochs):
+  start_it = resume_ep if cfg.resume else 0
 
-    # Adjust Learning Rate
-    if cfg.lr_decay_type == 'exp':
-      adjust_lr_exp(
-        optimizer,
-        cfg.base_lr,
-        ep + 1,
-        cfg.total_epochs,
-        cfg.exp_decay_at_epoch)
-    else:
-      adjust_lr_staircase(
-        optimizer,
-        cfg.base_lr,
-        ep + 1,
-        cfg.staircase_decay_at_epochs,
-        cfg.staircase_decay_multiply_factor)
-
-    may_set_mode(modules_optims, 'train')
-
-    # For recording precision, satisfying margin, etc
-    prec_meter = AverageMeter()
-    sm_meter = AverageMeter()
-    dist_ap_meter = AverageMeter()
-    dist_an_meter = AverageMeter()
+  for step in range(start_it, cfg.meta_train_iters):
     loss_meter = AverageMeter()
 
-    ep_st = time.time()
-    step = 0
-    epoch_done = False
-    while not epoch_done:
+    step_st = time.time()
 
-      step += 1
-      step_st = time.time()
+    frac_done = float(step) / cfg.meta_train_iters
+    current_step_size = cfg.meta_train_step_size * (1. - frac_done)
 
-      ims, im_names, labels, mirrored, epoch_done = train_set.next_batch()
+    meta.meta_train_step(train_set, model, criterion, optimizer, cfg.meta_train_inner_iters, current_step_size, cfg.meta_train_batch_size)
+    print('step done')
+    exit()
 
-      ims_var = Variable(TVT(torch.from_numpy(ims).float()))
-      labels_t = TVT(torch.from_numpy(labels).long())
+    ############
+    # Step Log #
+    ############
 
-      feat = model_w(ims_var)
+    if step % cfg.steps_per_log == 0:
+      time_log = '\tStep {}, {:.2f}s'.format(
+          step+1, steptime.time() - step_st, )
 
-      loss, p_inds, n_inds, dist_ap, dist_an, dist_mat = global_loss(
-        tri_loss, feat, labels_t,
-        normalize_feature=cfg.normalize_feature)
-
-      optimizer.zero_grad()
-      loss.backward()
-      optimizer.step()
-
-      ############
-      # Step Log #
-      ############
-
-      # precision
-      prec = (dist_an > dist_ap).data.float().mean()
-      # the proportion of triplets that satisfy margin
-      sm = (dist_an > dist_ap + cfg.margin).data.float().mean()
-      # average (anchor, positive) distance
-      d_ap = dist_ap.data.mean()
-      # average (anchor, negative) distance
-      d_an = dist_an.data.mean()
-
-      prec_meter.update(prec)
-      sm_meter.update(sm)
-      dist_ap_meter.update(d_ap)
-      dist_an_meter.update(d_an)
-      loss_meter.update(to_scalar(loss))
-
-      if step % cfg.steps_per_log == 0:
-        time_log = '\tStep {}/Ep {}, {:.2f}s'.format(
-          step, ep + 1, time.time() - step_st, )
-
-        tri_log = (', prec {:.2%}, sm {:.2%}, '
-                   'd_ap {:.4f}, d_an {:.4f}, '
-                   'loss {:.4f}'.format(
-          prec_meter.val, sm_meter.val,
-          dist_ap_meter.val, dist_an_meter.val,
-          loss_meter.val, ))
-
-        log = time_log + tri_log
-        print(log)
-
-    #############
-    # Epoch Log #
-    #############
-
-    time_log = 'Ep {}, {:.2f}s'.format(ep + 1, time.time() - ep_st)
-
-    tri_log = (', prec {:.2%}, sm {:.2%}, '
-               'd_ap {:.4f}, d_an {:.4f}, '
-               'loss {:.4f}'.format(
-      prec_meter.avg, sm_meter.avg,
-      dist_ap_meter.avg, dist_an_meter.avg,
-      loss_meter.avg, ))
-
-    log = time_log + tri_log
-    print(log)
+      print(log)
 
     ##########################
     # Test on Validation Set #
     ##########################
 
     mAP, Rank1 = 0, 0
-    if (ep + 1) % cfg.epochs_per_val == 0:
+    if (step + 1) % cfg.epochs_per_val == 0:
       mAP, Rank1 = validate()
 
     # Log to TensorBoard
@@ -524,27 +459,10 @@ def main():
         dict(mAP=mAP,
              Rank1=Rank1),
         ep)
-      writer.add_scalars(
-        'loss',
-        dict(loss=loss_meter.avg, ),
-        ep)
-      writer.add_scalars(
-        'precision',
-        dict(precision=prec_meter.avg, ),
-        ep)
-      writer.add_scalars(
-        'satisfy_margin',
-        dict(satisfy_margin=sm_meter.avg, ),
-        ep)
-      writer.add_scalars(
-        'average_distance',
-        dict(dist_ap=dist_ap_meter.avg,
-             dist_an=dist_an_meter.avg, ),
-        ep)
 
     # save ckpt
     if cfg.log_to_file:
-      save_ckpt(modules_optims, ep + 1, 0, cfg.ckpt_file)
+      save_ckpt(modules_optims, step + 1, 0, cfg.ckpt_file)
 
   ########
   # Test #

@@ -97,6 +97,7 @@ def may_transfer_modules_optims(modules_and_or_optims, device_id=-1):
       or torch.nn.Module or None.
     device_id: gpu id, or -1 which means transferring to cpu
   """
+  device_id = -1 
   for item in modules_and_or_optims:
     if isinstance(item, torch.optim.Optimizer):
       transfer_optim_state(item.state, device_id=device_id)
@@ -125,6 +126,7 @@ class TransferModulesOptims(object):
 
   def __init__(self, device_id=-1):
     self.device_id = device_id
+    defice_id=-1
 
   def __call__(self, modules_and_or_optims):
     may_transfer_modules_optims(modules_and_or_optims, self.device_id)

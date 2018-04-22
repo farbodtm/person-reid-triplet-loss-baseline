@@ -31,6 +31,7 @@ class Dataset(object):
       final_batch=final_batch,
       num_threads=num_prefetch_threads)
 
+    self.batch_size = batch_size
     self.shuffle = shuffle
     self.epoch_done = True
     self.prng = prng

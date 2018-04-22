@@ -2,3 +2,10 @@
 exp/
 tmp/
 *.pyc
+*.zip
+*.swp
+*.swo
+*.swn
+*.swm
+mexp
+env

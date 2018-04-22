@@ -11,15 +11,15 @@ from zipfile import ZipFile
 import os.path as osp
 import numpy as np
 
-from tri_loss.utils.utils import may_make_dir
-from tri_loss.utils.utils import save_pickle
-from tri_loss.utils.utils import load_pickle
+from reptile.utils.utils import may_make_dir
+from reptile.utils.utils import save_pickle
+from reptile.utils.utils import load_pickle
 
-from tri_loss.utils.dataset_utils import get_im_names
-from tri_loss.utils.dataset_utils import partition_train_val_set
-from tri_loss.utils.dataset_utils import new_im_name_tmpl
-from tri_loss.utils.dataset_utils import parse_im_name as parse_new_im_name
-from tri_loss.utils.dataset_utils import move_ims
+from reptile.utils.dataset_utils import get_im_names
+from reptile.utils.dataset_utils import partition_train_val_set
+from reptile.utils.dataset_utils import new_im_name_tmpl
+from reptile.utils.dataset_utils import parse_im_name as parse_new_im_name
+from reptile.utils.dataset_utils import move_ims
 
 
 def parse_original_im_name(im_name, parse_type='id'):

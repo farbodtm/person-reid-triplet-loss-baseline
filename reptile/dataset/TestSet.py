@@ -36,6 +36,9 @@ class TestSet(Dataset):
       separate_camera_set=None,
       single_gallery_shot=None,
       first_match_break=None,
+      num_shots=None,
+      num_classes=None,
+      eval_batch_size=None,
       **kwargs):
 
     super(TestSet, self).__init__(dataset_size=len(im_names), **kwargs)
@@ -49,8 +52,77 @@ class TestSet(Dataset):
     self.single_gallery_shot = single_gallery_shot
     self.first_match_break = first_match_break
 
+    im_ids = [parse_im_name(name, 'id') for name in im_names]
+    self.ids_to_im_inds = defaultdict(list)
+    for ind, id in enumerate(im_ids):
+      if marks[ind] == 1:
+        self.ids_to_im_inds[id].append(ind)
+    self.ids = self.ids_to_im_inds.keys()
+    print(self.ids)
+
   def set_feat_func(self, extract_feat_func):
     self.extract_feat_func = extract_feat_func
+
+  def get_sample_gallery(self, i=0):
+    """Here one sample means several images (and labels etc) of one id.
+    Returns:
+      ims: a list of images
+    """
+    rid = random.sample(self.ids, 1)[0]
+    inds = self.ids_to_im_inds[rid]
+    if len(inds) < self.num_shots:
+      inds = np.random.choice(inds, self.num_shots, replace=True)
+    else:
+      inds = np.random.choice(inds, self.num_shots, replace=False)
+    im_names = [self.im_names[ind] for ind in inds]
+    ims = [np.asarray(Image.open(osp.join(self.im_dir, name)))
+           for name in im_names]
+    ims, mirrored = zip(*[self.pre_process_im(im) for im in ims])
+    labels = [self.ids2labels[rid] for _ in range(self.num_shots)]
+    ilabels = [i for _ in range(self.num_shots)]
+    return ims, im_names, labels, ilabels, mirrored
+
+  def mini_dataset_gallery(self):
+    samples = []
+    for _ in range(self.num_classes):
+      samples.append(self.get_sample_gallery(_))
+
+    return samples 
+
+  def mini_batches(self, samples, num_batches, replacement=False):
+    """
+    Generate mini-batches from some data.
+
+    Returns:
+      An iterable of sequences of (input, label) pairs,
+        where each sequence is a mini-batch.
+    """
+    im_list, im_names, labels, ilabels, mirrored = zip(*samples)
+    ims = np.stack(np.concatenate(im_list))
+    im_names = np.concatenate(im_names)
+    labels = np.concatenate(labels)
+    ilabels = np.concatenate(ilabels)
+    mirrored = np.concatenate(mirrored)
+    samples = zip(ims, im_names, labels, ilabels, mirrored)
+
+    samples = list(samples)
+    if replacement:
+      for _ in range(num_batches):
+        yield random.sample(samples, self.eval_batch_size)
+      return
+    cur_batch = []
+    batch_count = 0
+    while True:
+      random.shuffle(samples)
+      for sample in samples:
+        cur_batch.append(sample)
+        if len(cur_batch) < self.eval_batch_size:
+          continue
+        yield cur_batch
+        cur_batch = []
+        batch_count += 1
+        if batch_count == num_batches:
+          return
 
   def get_sample(self, ptr):
     im_name = self.im_names[ptr]
@@ -62,6 +134,7 @@ class TestSet(Dataset):
     # denoting whether the im is from query, gallery, or multi query set
     mark = self.marks[ptr]
     return im, id, cam, im_name, mark
+
 
   def next_batch(self):
     if self.epoch_done and self.shuffle:
